@@ -39,7 +39,6 @@ def get_db_connection():
 def setup_database_schema(conn):
     """Ensures the final_report table and tracking columns exist."""
     with conn.cursor() as cur:
-        # 1. Add 'status' column to 'incident_reports' for tracking
         cur.execute("""
             DO $$
             BEGIN
@@ -50,11 +49,12 @@ def setup_database_schema(conn):
             END $$;
         """)
         
-        # 2. Create the final table for summarized, unique events
+        # MODIFIED: Added 'event_location' column
         cur.execute("""
             CREATE TABLE IF NOT EXISTS final_report (
                 id SERIAL PRIMARY KEY,
                 event_summary TEXT,
+                event_location TEXT,
                 source_incident_ids BIGINT[],
                 number_of_reports INTEGER,
                 generated_at TIMESTAMPTZ DEFAULT NOW()
@@ -67,28 +67,27 @@ def fetch_unprocessed_incidents(conn):
     """Fetches all incident reports that have not yet been grouped."""
     with conn.cursor() as cur:
         cur.execute("SELECT id, original_tweet_text, extracted_location, extracted_issue FROM incident_reports WHERE status = 'unprocessed'")
-        incidents = cur.fetchall()
-        # Convert list of tuples to list of dictionaries for easier handling
-        incident_list = [
-            {'id': row[0], 'text': row[1], 'location': row[2], 'issue': row[3]}
-            for row in incidents
-        ]
+        
+        colnames = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        incident_list = [dict(zip(colnames, row)) for row in rows]
+        
     print(f"Found {len(incident_list)} unprocessed incidents to group.")
     return incident_list
 
-def insert_final_event_report(conn, summary, incident_ids):
+def insert_final_event_report(conn, summary, location, incident_ids):
     """Inserts a new summarized event into the final_report table."""
     with conn.cursor() as cur:
+        # MODIFIED: Includes 'event_location' in the INSERT statement
         cur.execute(
-            "INSERT INTO final_report (event_summary, source_incident_ids, number_of_reports) VALUES (%s, %s, %s)",
-            (summary, incident_ids, len(incident_ids))
+            "INSERT INTO final_report (event_summary, event_location, source_incident_ids, number_of_reports) VALUES (%s, %s, %s, %s)",
+            (summary, location, incident_ids, len(incident_ids))
         )
     conn.commit()
 
 def update_incident_status(conn, incident_ids):
     """Updates the status of processed incidents to 'grouped'."""
     with conn.cursor() as cur:
-        # Use a tuple for the IN clause
         cur.execute(
             "UPDATE incident_reports SET status = 'grouped' WHERE id IN %s",
             (tuple(incident_ids),)
@@ -112,27 +111,46 @@ def get_embeddings(texts):
         return None
 
 def summarize_cluster(incident_texts):
-    """Generates a high-level summary for a group of related incident texts."""
+    """Generates a high-level summary and location for a group of related incident texts."""
     model = genai.GenerativeModel('gemini-1.5-flash-latest')
     text_blob = "\n- ".join(incident_texts)
+    
+    # MODIFIED: Prompt now asks for JSON with 'summary' and 'location'
     prompt = f"""
     The following are multiple reports describing the same disaster event.
-    Analyze them and generate a single, clear, and concise summary of the event.
-    The summary should describe the core issue and location. Do not include a preamble.
+    Analyze them and generate a single, clear, and concise summary and identify the most specific location for the event.
+    Your response MUST be a valid JSON object with two keys: "summary" and "location".
 
-    Example format: "Severe waterlogging on Arcot Road near the new bus stand is causing heavy traffic blockage."
-
+    Example:
     Reports:
+    - "Water entering ground floor of houses in Gandhi Nagar."
+    - "My friend in Gandhi Nagar says their entire street is underwater."
+    Response:
+    {{
+      "summary": "Multiple reports indicate that houses in Gandhi Nagar are experiencing ground-floor flooding.",
+      "location": "Gandhi Nagar"
+    }}
+
+    Reports to analyze:
     ---
     - {text_blob}
     ---
     """
     try:
         response = model.generate_content(prompt)
-        return response.text.strip()
+        cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+        result = json.loads(cleaned_response)
+        # Return a dictionary with both summary and location
+        return {
+            "summary": result.get("summary", "Could not generate summary."),
+            "location": result.get("location", "Not specified")
+        }
     except Exception as e:
         print(f"⚠️ Error during summarization: {e}")
-        return "Could not generate summary."
+        return {
+            "summary": "Could not generate summary.",
+            "location": "Error"
+        }
 
 # --- Main Execution Logic ---
 if __name__ == "__main__":
@@ -147,43 +165,41 @@ if __name__ == "__main__":
             if not incidents:
                 print("No new incidents to process.")
             else:
-                # 1. Prepare texts for embedding
                 texts_for_embedding = [f"{inc['extracted_location']}: {inc['extracted_issue']}" for inc in incidents]
                 
-                # 2. Get embeddings for all incidents
                 print("Generating embeddings for all incidents...")
                 embeddings = get_embeddings(texts_for_embedding)
                 
                 if embeddings is not None:
-                    # 3. Cluster the incidents to find groups
                     print("Clustering incidents to find groups...")
-                    # DBSCAN parameters may need tuning for your specific data
                     db = DBSCAN(eps=0.5, min_samples=2, metric='cosine').fit(embeddings)
                     labels = db.labels_
 
-                    # 4. Process each found cluster
                     unique_labels = set(labels)
                     for label in unique_labels:
                         if label == -1:
-                            # -1 represents noise (incidents that don't belong to any group)
                             continue
 
                         cluster_indices = [i for i, l in enumerate(labels) if l == label]
                         cluster_incidents = [incidents[i] for i in cluster_indices]
                         incident_ids_in_cluster = [inc['id'] for inc in cluster_incidents]
-                        incident_texts_in_cluster = [inc['text'] for inc in cluster_incidents]
+                        incident_texts_in_cluster = [inc['original_tweet_text'] for inc in cluster_incidents]
                         
                         print(f"\nFound a cluster (Event #{label}) with {len(cluster_incidents)} related reports.")
                         
-                        # 5. Summarize the cluster
-                        summary = summarize_cluster(incident_texts_in_cluster)
-                        print(f"   -> Summary: {summary}")
+                        # MODIFIED: The function now returns a dictionary
+                        summary_data = summarize_cluster(incident_texts_in_cluster)
+                        event_summary = summary_data["summary"]
+                        event_location = summary_data["location"]
                         
-                        # 6. Insert the final report and update status
-                        insert_final_event_report(db_connection, summary, incident_ids_in_cluster)
+                        print(f"   -> Location: {event_location}")
+                        print(f"   -> Summary: {event_summary}")
+                        
+                        # MODIFIED: Pass the new location to the insert function
+                        insert_final_event_report(db_connection, event_summary, event_location, incident_ids_in_cluster)
                         update_incident_status(db_connection, incident_ids_in_cluster)
                         print(f"   -> ✅ Saved summary to 'final_report' and updated status for {len(incident_ids_in_cluster)} incidents.")
-                        time.sleep(1) # Pause to respect API rate limits
+                        time.sleep(1)
         
         finally:
             db_connection.close()
