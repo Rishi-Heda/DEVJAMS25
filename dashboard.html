@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Crisis Map Dashboard</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; }
+        #map { height: 100%; width: 100%; z-index: 10; background-color: #e5e7eb; }
+        .dark #map { background-color: #1a202c; }
+
+        #incident-list::-webkit-scrollbar { width: 8px; }
+        #incident-list::-webkit-scrollbar-track { background: #f1f5f9; }
+        .dark #incident-list::-webkit-scrollbar-track { background: #1e293b; }
+        #incident-list::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
+        .dark #incident-list::-webkit-scrollbar-thumb { background: #475569; }
+        #incident-list::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .dark #incident-list::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        .leaflet-popup-content-wrapper { border-radius: 8px; }
+        .leaflet-popup-content { margin: 14px 20px; font-size: 14px; line-height: 1.6; }
+        
+        /* Dark Mode Leaflet Styles */
+        .dark .leaflet-popup-content-wrapper { background: #1e293b; color: #e2e8f0; } /* bg-slate-800, text-slate-200 */
+        .dark .leaflet-popup-tip { background: #1e293b; }
+        .dark .leaflet-bar a, .dark .leaflet-bar a:hover { background-color: #1e293b; color: #e2e8f0; border-bottom: 1px solid #334155; }
+        .dark .leaflet-control-attribution a { color: #94a3b8; } /* text-slate-400 */
+        
+        /* Styling for Dynamic Incident Markers */
+        .custom-map-icon .icon-wrapper {
+            width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+            border-radius: 50%;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            border: 3px solid #ffffff; position: relative; transform: translateY(-50%);
+        }
+        .custom-map-icon .icon-wrapper svg { width: 20px; height: 20px; color: white; }
+        
+        @keyframes pulse {
+            0% { transform: scale(1) translateY(-50%); opacity: 1; }
+            50% { transform: scale(1.3) translateY(-50%); opacity: 0.75; }
+            100% { transform: scale(1) translateY(-50%); opacity: 1; }
+        }
+        .dispatched-marker-animation { animation: pulse 2s infinite; }
+        
+        /* Styling for Static POI Markers */
+        .poi-marker .icon-wrapper {
+            border-radius: 4px; border: 2px solid #4B5563;
+            width: 28px; height: 28px;
+        }
+        .poi-marker .icon-wrapper svg { width: 14px; height: 14px; }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-slate-900">
+
+    <div class="flex h-screen w-screen">
+        <aside id="sidebar" class="absolute lg:relative w-full sm:w-80 md:w-96 h-full bg-white dark:bg-slate-800 shadow-lg z-20 transform -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-in-out">
+            <div class="p-4 border-b dark:border-slate-700">
+                <h1 class="text-2xl font-bold text-blue-600 dark:text-blue-400">Crisis Incidents</h1>
+                <p class="text-sm text-gray-500 dark:text-slate-400">Live feed from Vellore, TN</p>
+            </div>
+            <div id="incident-list" class="overflow-y-auto h-[calc(100vh-80px)]"></div>
+        </aside>
+
+        <main class="flex-1 h-screen relative">
+            <div id="map"></div>
+            <button id="sidebar-toggle" class="lg:hidden absolute top-4 left-4 z-30 bg-white dark:bg-slate-700 p-2 rounded-md shadow-md">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-700 dark:text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"/></svg>
+            </button>
+            <button id="theme-toggle" class="absolute top-4 right-4 z-30 bg-white dark:bg-slate-700 p-2 rounded-md shadow-md" title="Toggle Theme">
+                <svg id="theme-toggle-dark-icon" class="h-6 w-6 text-gray-700 dark:text-slate-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+                <svg id="theme-toggle-light-icon" class="h-6 w-6 text-gray-700 dark:text-slate-300 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+            </button>
+        </main>
+    </div>
+
+    <script>
+        // --- MAP INITIALIZATION ---
+        const map = L.map('map').setView([12.9165, 79.1325], 14);
+        const lightTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' });
+        const darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap contributors &copy; CARTO' });
+
+        const incidentList = document.getElementById('incident-list');
+        const sidebar = document.getElementById('sidebar');
+        const markers = {};
+
+        // --- ICON SVGs ---
+        const incidentIcons = { 'Flood': `<path d="M14.64 3.73a.87.87 0 0 0-1.15.22L8 10.37V1a1 1 0 0 0-2 0v12a1 1 0 0 0 1.54.84l5.86-5.32 1.8 3.52a.87.87 0 0 0 .78.47h.1a.87.87 0 0 0 .78-1.29l-3.3-6.45a.87.87 0 0 0-.27-.26zM20 12a1 1 0 0 0-1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6a1 1 0 0 0-2 0v6a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-6a1 1 0 0 0-1-1z"/>`, 'Fire': `<path d="M12.94 1.34a1 1 0 0 0-1.88 0l-1.6 3.21a1 1 0 0 1-.74.5l-3.55.51a1 1 0 0 0-.55 1.7L6 10.2a1 1 0 0 1-.29.88l-2.54 2.47a1 1 0 0 0 .28 1.7L7 16.48a1 1 0 0 1 .23.86l-1.05 3.55a1 1 0 0 0 1.55 1.13L10 20.3a1 1 0 0 1 .9-.05l3.18 1.7a1 1 0 0 0 1.48-.9l-.33-3.61a1 1 0 0 1 .28-.9l2.54-2.47a1 1 0 0 0-.29-1.7l-3.21-.47a1 1 0 0 1-.74-.5l-1.6-3.21z"/>`, 'Road Blockage': `<path d="M17.45 6.45L12 1.01 6.55 6.45a1 1 0 0 0 0 1.41L10.59 12l-4 4a1 1 0 0 0 1.41 1.41L12 13.41l4.45 4a1 1 0 0 0 1.41-1.41L13.41 12l4-4a1 1 0 0 0 0-1.41zM22 1a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v22a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1V1zM20 20H4V4h16v16z"/>`, 'Power Outage': `<path d="M12 2A10 10 0 1 0 22 12 10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-8a1 1 0 0 1-1-1V6a1 1 0 0 1 2 0v5a1 1 0 0 1-1 1zm3.7-5.7a1 1 0 0 1-1.4 1.4L12 8.41l-2.3 2.3a1 1 0 0 1-1.4-1.4L10.59 7 8.3 4.7A1 1 0 0 1 9.7 3.3L12 5.59l2.3-2.3a1 1 0 0 1 1.4 1.4L13.41 7z"/>`, 'Medical Emergency': `<path d="M12 2a1 1 0 0 0-1 1v7H4a1 1 0 0 0 0 2h7v7a1 1 0 0 0 2 0v-7h7a1 1 0 0 0 0-2h-7V3a1 1 0 0 0-1-1z"/>`, 'default': `<path d="M12 2a8 8 0 1 0 8 8 8 8 0 0 0-8-8zM7 9a1 1 0 0 1 0-2h2a1 1 0 0 1 0 2zm6 0a1 1 0 0 1 0-2h2a1 1 0 0 1 0 2zM9 13a3 3 0 0 1 6 0 1 1 0 0 1-2 0 1 1 0 0 0-2 0 1 1 0 0 1-2 0z"/>` };
+        const poiIcons = { 'Police': `<path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/>`, 'Fire Station': `<path d="M12 22c1.1 0 2-.9 2-2v-2H10v2c0 1.1.9 2 2 2zm6-11.82c0-2.89-2.43-5.2-5.4-5.2H11.4c-2.97 0-5.4 2.31-5.4 5.2V16h12v-5.82zM12 0c-4.97 0-9 4.03-9 9v7c0 1.66 1.34 3 3 3h12c1.66 0 3-1.34 3-3v-7c0-4.97-4.03-9-9-9z"/>`, 'Hospital': `<path d="M19 3H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 1.99 2H19c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 11h-4v4h-4v-4H6v-4h4V6h4v4h4v4z"/>` };
+
+        // --- DEFINITIONS ---
+        const poiStyles = { 'Police': { hex: '#0284C7', icon: poiIcons['Police'] }, 'Fire Station': { hex: '#DC2626', icon: poiIcons['Fire Station'] }, 'Hospital': { hex: '#16A34A', icon: poiIcons['Hospital'] } };
+        const incidentStyles = { 'Flood': { hex: '#3B82F6', text: '#1E40AF', bg: '#DBEAFE', icon: incidentIcons['Flood'] }, 'Fire': { hex: '#EF4444', text: '#991B1B', bg: '#FEE2E2', icon: incidentIcons['Fire'] }, 'Road Blockage': { hex: '#F97316', text: '#9A3412', bg: '#FFEDD5', icon: incidentIcons['Road Blockage'] }, 'Power Outage': { hex: '#8B5CF6', text: '#5B21B6', bg: '#EDE9FE', icon: incidentIcons['Power Outage'] }, 'Medical Emergency': { hex: '#14B8A6', text: '#0F766E', bg: '#CCFBF1', icon: incidentIcons['Medical Emergency'] }, 'Dispatched': { hex: '#06B6D4', text: '#0E7490', bg: '#CFFAFE', icon: incidentIcons['default'] }, 'default': { hex: '#6B7280', text: '#374151', bg: '#F3F4F6', icon: incidentIcons['default'] } };
+        const priorityColors = { 'High': 'border-red-500', 'Medium': 'border-yellow-500', 'Low': 'border-green-500' };
+
+        // --- NEW: DYNAMIC DATA FETCHING ---
+        async function fetchAndDisplayData() {
+            try {
+                // IMPORTANT: Replace these with your actual backend API endpoints
+                const incidentsResponse = await fetch('/api/incidents');
+                const poisResponse = await fetch('/api/pois');
+
+                if (!incidentsResponse.ok || !poisResponse.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                
+                const incidentsData = await incidentsResponse.json();
+                const poisData = await poisResponse.json();
+                
+                // Transform data from database format to frontend format
+                const incidents = incidentsData.map(item => ({
+                    id: item.source_report_id,
+                    type: item.event_location.includes("Fire") ? "Fire" : "Flood", // Simple logic to determine type
+                    location: [item.latitude, item.longitude],
+                    details: item.event_summary,
+                    priority: 'High', // You can add a priority field to your DB
+                    status: 'reported' // You can add a status field to your DB
+                }));
+
+                renderStaticPOIs(poisData);
+                renderIncidents(incidents);
+
+            } catch (error) {
+                console.error('Failed to fetch data:', error);
+                // Optionally display an error message to the user on the page
+                incidentList.innerHTML = `<div class="p-4 text-red-600">Failed to load live incident data. Please check the connection.</div>`;
+            }
+        }
+        
+        // --- RENDER FUNCTIONS (MODIFIED to accept data) ---
+        function renderStaticPOIs(pois) {
+            if (!pois) return;
+            pois.forEach(poi => {
+                const style = poiStyles[poi.type]; if (!style) return;
+                const iconHtml = `<div class="icon-wrapper" style="background-color: ${style.hex};"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">${style.icon}</svg></div>`;
+                const customIcon = L.divIcon({ html: iconHtml, className: 'custom-map-icon poi-marker', iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -16] });
+                L.marker(poi.location, { icon: customIcon }).addTo(map).bindPopup(`<div class="font-sans font-bold">${poi.name}</div><div class="font-sans">${poi.type}</div>`);
+            });
+        }
+
+        function renderIncidents(incidents) {
+            if (!incidents) return;
+            incidentList.innerHTML = '';
+            // Clear existing markers
+            for (const id in markers) { map.removeLayer(markers[id]); delete markers[id]; }
+            
+            incidents.forEach(incident => {
+                const isDispatched = incident.status === 'dispatched';
+                const styles = isDispatched ? incidentStyles['Dispatched'] : (incidentStyles[incident.type] || incidentStyles.default);
+                const listItemBg = isDispatched ? `bg-cyan-50 dark:bg-cyan-900/50` : 'hover:bg-gray-100 dark:hover:bg-slate-700';
+                const item = document.createElement('div');
+                item.className = `p-4 border-l-4 ${priorityColors[incident.priority] || 'border-gray-400'} border-b dark:border-slate-700 flex justify-between items-start ${listItemBg} transition-colors`;
+                item.innerHTML = `
+                    <div class="flex-grow cursor-pointer pr-2">
+                        <div class="flex justify-between items-center">
+                            <h3 class="font-bold text-gray-800 dark:text-slate-200">${incident.type}</h3>
+                            <span class="text-xs font-semibold px-2 py-1 rounded-full" style="color: ${styles.text}; background-color: ${styles.bg};">${isDispatched ? 'Dispatched' : incident.priority}</span>
+                        </div>
+                        <p class="text-sm text-gray-600 dark:text-slate-400 mt-1">${incident.details}</p>
+                    </div>
+                    <div class="flex flex-col items-center space-y-2 ml-2">
+                        <button class="dispatch-btn p-1 text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300" data-incident-id="${incident.id}" title="Dispatch Team"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M18 1c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zm-5 4c0-1.66 1.34-3 3-3s3 1.34 3 3-1.34 3-3 3-3-1.34-3-3zm5.66 6.58c-.62-.28-1.29-.42-2-.42-3.31 0-6 2.69-6 6v3h12v-3c0-1.23-.4-2.36-1.08-3.28l-1.06 1.06c.33.51.54 1.1.54 1.72v1h-8v-1c0-2.21 1.79-4 4-4 .53 0 1.03.11 1.5.29l.71-.71zM6 1c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zm0 8c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm.66 2.58c-.62-.28-1.29-.42-2-.42-3.31 0-6 2.69-6 6v3h12v-3c0-1.23-.4-2.36-1.08-3.28l-1.06 1.06c.33.51.54 1.1.54 1.72v1H.5v-1c0-2.21 1.79-4 4-4 .53 0 1.03.11 1.5.29l.71-.71z"/></svg></button>
+                        <button class="delete-incident-btn p-1 text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300" data-incident-id="${incident.id}" title="Mark as Complete"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg></button>
+                    </div>`;
+                incidentList.appendChild(item);
+
+                const markerAnimationClass = isDispatched ? 'dispatched-marker-animation' : '';
+                const iconHtml = `<div class="icon-wrapper ${markerAnimationClass}" style="background-color: ${styles.hex};"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">${styles.icon}</svg></div>`;
+                const customIcon = L.divIcon({ html: iconHtml, className: 'custom-map-icon', iconSize: [36, 36], iconAnchor: [18, 18], popupAnchor: [0, -20] });
+                
+                const marker = L.marker(incident.location, { icon: customIcon }).addTo(map);
+                marker.bindPopup(`<div class="font-sans"><h4 class="font-bold text-md mb-1">${incident.type}</h4><p>${incident.details}</p><span class="text-xs mt-2 inline-block font-semibold px-2 py-1 rounded-full" style="color: ${styles.text}; background-color: ${styles.bg};">${isDispatched ? 'Dispatched' : incident.priority}</span></div>`);
+                markers[incident.id] = marker;
+                item.querySelector('.flex-grow.cursor-pointer').addEventListener('click', () => { map.flyTo(incident.location, 16); marker.openPopup(); });
+                // Note: Dispatch and Delete buttons would need to call API endpoints to update the database
+            });
+        }
+        
+        // --- EVENT LISTENERS ---
+        document.getElementById('sidebar-toggle').addEventListener('click', (e) => { e.stopPropagation(); sidebar.classList.toggle('-translate-x-full'); });
+        const themeToggleBtn = document.getElementById('theme-toggle');
+        const darkIcon = document.getElementById('theme-toggle-dark-icon');
+        const lightIcon = document.getElementById('theme-toggle-light-icon');
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark');
+                darkIcon.classList.add('hidden');
+                lightIcon.classList.remove('hidden');
+                if (map.hasLayer(lightTileLayer)) map.removeLayer(lightTileLayer);
+                darkTileLayer.addTo(map);
+                localStorage.setItem('theme', 'dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+                darkIcon.classList.remove('hidden');
+                lightIcon.classList.add('hidden');
+                if (map.hasLayer(darkTileLayer)) map.removeLayer(darkTileLayer);
+                lightTileLayer.addTo(map);
+                localStorage.setItem('theme', 'light');
+            }
+        }
+
+        themeToggleBtn.addEventListener('click', () => {
+            const isDark = document.documentElement.classList.contains('dark');
+            applyTheme(isDark ? 'light' : 'dark');
+        });
+        
+        // --- INITIAL DATA LOAD ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const initialTheme = savedTheme || (prefersDark ? 'dark' : 'light');
+            applyTheme(initialTheme);
+
+            // Fetch data every 30 seconds
+            fetchAndDisplayData();
+            setInterval(fetchAndDisplayData, 30000); 
+        });
+    </script>
+</body>
+</html>
