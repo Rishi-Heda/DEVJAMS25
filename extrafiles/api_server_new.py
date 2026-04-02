@@ -36,11 +36,11 @@ def get_incidents():
     if conn:
         try:
             cur = conn.cursor()
-            # --- FIX 1: Querying the correct table 'geocoded_tweets' ---
+            # MODIFIED: Selects status and number_of_reports for the dashboard
             cur.execute("""
                 SELECT 
                     source_report_id, latitude, longitude, 
-                    event_summary, event_location, status
+                    event_summary, event_location, status, number_of_reports
                 FROM geocoded_tweets 
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND status != 'completed';
             """)
@@ -65,18 +65,20 @@ def dispatch_incident(report_id):
         try:
             cur = conn.cursor()
             cur.execute("SELECT status FROM geocoded_tweets WHERE source_report_id = %s", (report_id,))
-            current_status = cur.fetchone()[0]
-            new_status = 'reported' if current_status == 'dispatched' else 'dispatched'
-            cur.execute(
-                "UPDATE geocoded_tweets SET status = %s WHERE source_report_id = %s",
-                (new_status, report_id)
-            )
-            conn.commit()
-            cur.close()
-            return jsonify({'success': True, 'new_status': new_status})
+            result = cur.fetchone()
+            if result:
+                current_status = result[0]
+                new_status = 'reported' if current_status == 'dispatched' else 'dispatched'
+                cur.execute(
+                    "UPDATE geocoded_tweets SET status = %s WHERE source_report_id = %s",
+                    (new_status, report_id)
+                )
+                conn.commit()
+                cur.close()
+                return jsonify({'success': True, 'new_status': new_status})
         finally:
             conn.close()
-    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+    return jsonify({'success': False, 'error': 'Database or server error'}), 500
 
 @app.route('/api/incidents/<int:report_id>/complete', methods=['POST'])
 def complete_incident(report_id):
@@ -94,12 +96,12 @@ def complete_incident(report_id):
             return jsonify({'success': True})
         finally:
             conn.close()
-    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+    return jsonify({'success': False, 'error': 'Database or server error'}), 500
 
 # --- Serve the HTML Frontend ---
 @app.route('/')
 def serve_dashboard():
-    # --- FIX 2: Serving the correct HTML file 'websiteatt7.html' ---
+    # Serves the correct HTML file name
     return send_from_directory('.', 'dashboard_new.html')
 
 # --- Main Execution Block ---
